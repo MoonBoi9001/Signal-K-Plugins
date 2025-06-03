@@ -170,7 +170,8 @@ module.exports = function smartGridController(app) {
           timezone: config.scheduleSettings?.timezone || 'Europe/London',
           startHour: config.scheduleSettings?.startHour || 0,
           endHour: config.scheduleSettings?.endHour || 6
-        }
+        },
+        controlMethod: config.controlMethod || 'auto'
       };
 
       // Validate configuration for safety
@@ -242,19 +243,44 @@ module.exports = function smartGridController(app) {
       }
     }
   
-    // Helper function to safely send relay commands
-    function setRelayState(state, reason) {
+    // Helper function to safely send control commands (supports both Cerbo GX and MultiPlus II GX)
+    function setGridState(enabled, reason) {
       try {
-        app.handleMessage('smart-grid-controller', {
-          updates: [{
-            values: [{
-              path: 'electrical.switches.relay1.state',
-              value: state
+        const config = getConfig();
+        
+        // Method 1: Try MultiPlus II GX direct AC input control (preferred for built-in GX)
+        if (config.controlMethod === 'multiplus-gx' || config.controlMethod === 'auto') {
+          // Primary control: ignoreAcIn1 state (0=enabled, 1=ignored/disabled)
+          app.handleMessage('smart-grid-controller', {
+            updates: [{
+              values: [{
+                path: 'electrical.inverters.275.acState.ignoreAcIn1.state',
+                value: enabled ? 0 : 1  // 0=don't ignore AC input, 1=ignore AC input
+              }]
             }]
-          }]
-        });
+          });
+          
+          log('info', `MultiPlus II GX AC input ${enabled ? 'ENABLED' : 'DISABLED'} - ${reason}`);
+        }
+        
+        // Method 2: Fallback to Cerbo GX relay control (for external GX units)
+        if (config.controlMethod === 'cerbo-gx' || config.controlMethod === 'auto') {
+          app.handleMessage('smart-grid-controller', {
+            updates: [{
+              values: [{
+                path: 'electrical.switches.relay1.state',
+                value: enabled ? 1 : 0
+              }]
+            }]
+          });
+          
+          if (config.controlMethod === 'cerbo-gx') {
+            log('info', `Cerbo GX Relay 1 ${enabled ? 'ENABLED' : 'DISABLED'} - ${reason}`);
+          }
+        }
+        
       } catch (error) {
-        log('error', `Error setting relay state to ${state} (${reason}) - ${error.message}`);
+        log('error', `Error setting grid state to ${enabled} (${reason}) - ${error.message}`);
       }
     }
   
@@ -266,7 +292,7 @@ module.exports = function smartGridController(app) {
       start: function() {
         // Enable grid immediately on startup
         log('info', 'Grid AC ENABLED on startup - 30s grace period active');
-        setRelayState(1, 'Startup - 30s grace period active');
+        setGridState(true, 'Startup - 30s grace period active');
         
         // Start 30-second startup grace period
         startupGraceTimer = setTimeout(() => {
@@ -401,7 +427,7 @@ module.exports = function smartGridController(app) {
               
               log('info', `Emergency protection triggered - Critical voltage ${voltage.toFixed(2)}V > ${config.voltageThresholds.emergencyVoltage}V`);
               
-              setRelayState(0, 'Emergency protection triggered');
+              setGridState(false, 'Emergency protection triggered');
             } else if (anyConditionActive && !relayState && !batteryProtectionTriggered && !emergencyProtectionTriggered) {
               // Conditions want to enable grid and no protection active - turn on immediately
               clearTimeout(disableTimer);
@@ -417,7 +443,7 @@ module.exports = function smartGridController(app) {
               
               log('info', `Active conditions: ${activeConditions.join(', ')}`);
               
-              setRelayState(1, `Active conditions: ${activeConditions.join(', ')}`);
+              setGridState(true, `Active conditions: ${activeConditions.join(', ')}`);
             } else if (batteryProtectionTriggered && relayState) {
               // Battery protection triggered - disable grid immediately
               clearTimeout(disableTimer);
@@ -430,7 +456,7 @@ module.exports = function smartGridController(app) {
               
               log('info', `Battery protection: ${protectionReasons.join(', ')} (Load condition: ${enabledByLoad ? 'Active' : 'Inactive'})`);
               
-              setRelayState(0, `Battery protection: ${protectionReasons.join(', ')} (Load condition: ${enabledByLoad ? 'Active' : 'Inactive'})`);
+              setGridState(false, `Battery protection: ${protectionReasons.join(', ')} (Load condition: ${enabledByLoad ? 'Active' : 'Inactive'})`);
             } else if (!anyConditionActive && relayState && !startupGraceTimer) {
               // No conditions want grid enabled and startup grace period is over - start 30 second disable timer
               if (!disableTimer) {
@@ -447,7 +473,7 @@ module.exports = function smartGridController(app) {
                   
                   log('info', `Cleared conditions: ${clearedConditions.join(', ')}`);
                   
-                  setRelayState(0, `Cleared conditions: ${clearedConditions.join(', ')}`);
+                  setGridState(false, `Cleared conditions: ${clearedConditions.join(', ')}`);
                 }, 30000);
               }
             } else if (anyConditionActive && relayState && !batteryProtectionTriggered && !emergencyProtectionTriggered) {
@@ -460,7 +486,7 @@ module.exports = function smartGridController(app) {
           }
         });
   
-        // Map Signal K relay state to Cerbo GX Relay 1
+        // Map Signal K control to both MultiPlus II GX and Cerbo GX Relay
         app.registerPutHandler('v1', 'electrical.switches.relay1.state', (context, path, value) => {
           try {
             app.putSelfPath('electrical.switches.relay1.state', value);
@@ -471,6 +497,19 @@ module.exports = function smartGridController(app) {
             }
           } catch (error) {
             log('error', `Error setting relay state - ${error.message}`);
+          }
+        });
+        
+        // MultiPlus II GX AC input control handlers
+        app.registerPutHandler('v1', 'electrical.inverters.275.acState.ignoreAcIn1.state', (context, path, value) => {
+          try {
+            app.putSelfPath('electrical.inverters.275.acState.ignoreAcIn1.state', value);
+            if (app.dbus && app.dbus.setValue) {
+              // MultiPlus II GX ignore AC input control (0=enabled, 1=disabled)
+              app.dbus.setValue('com.victronenergy.vebus.ttyS3', '/Ac/State/IgnoreAcIn1', value);
+            }
+          } catch (error) {
+            log('error', `Error setting AC input ignore state - ${error.message}`);
           }
         });
       },

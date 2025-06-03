@@ -51,18 +51,44 @@ Access through Signal K admin panel → Plugin Config → Smart Grid Controller:
 
 ## Requirements
 
-- Victron Cerbo GX with VenusOS "Large" firmware
+- **Option A: MultiPlus II GX** (built-in GX device) - No external hardware needed
+- **Option B: Cerbo GX** with VenusOS "Large" firmware + external contactor
 - Signal K server with Victron plugin
-- External contactor wired to Cerbo GX Relay 1
 - **Properly configured battery settings**
 
-## Hardware Wiring
+## Hardware Configuration
 
+### **Option A: MultiPlus II GX (Recommended)**
+```
+Grid AC ──► MultiPlus II GX ──► AC Loads
+                │
+                └─ Built-in GX controls AC input directly
+```
+- ✅ No external contactor needed
+- ✅ Direct AC input enable/disable control
+- ✅ Cleaner, more reliable control
+- ✅ AC input current limits configured in Victron settings
+
+### **Option B: External Cerbo GX + Contactor**
 ```
 Grid AC ──► [Contactor] ──► MultiPlus II AC Input
               │
               └─ Cerbo GX Relay 1 Output
 ```
+- Requires external contactor wired to Cerbo GX Relay 1
+- For systems with separate Cerbo GX units
+
+## Configuration
+
+### **Control Method Settings**
+1. **Auto-detect (Recommended)**: Plugin tries both control methods
+2. **MultiPlus II GX**: For systems with built-in GX (your setup!)
+3. **Cerbo GX**: For external Cerbo GX with relay control
+
+### **For MultiPlus II GX Users:**
+- Set **Control Method**: "MultiPlus II GX (built-in GX)"
+- No external wiring needed - plugin controls AC input directly
+- **AC input current limits**: Configure in Victron system settings (not in this plugin)
 
 ## Safety Notes
 
@@ -80,7 +106,9 @@ Grid AC ──► [Contactor] ──► MultiPlus II AC Input
 2. **Verify data paths** - ensure Victron plugin is running and data is available:
    - `electrical.chargers.275.voltage` (battery voltage)
    - `electrical.inverters.275.acout.power` (AC load)
-3. **Test relay manually** in Signal K admin: Server → Data Browser → electrical.switches.relay1.state
+   - **MultiPlus II GX**: `electrical.inverters.275.acState.ignoreAcIn1.state` (AC input control)
+   - **Cerbo GX**: `electrical.switches.relay1.state` (relay control)
+3. **Test control manually** in Signal K admin: Server → Data Browser → navigate to control path
 
 ### Common Issues
 - **No relay control**: Check Cerbo GX relay configuration and wiring

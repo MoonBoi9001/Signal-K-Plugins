@@ -1,6 +1,6 @@
 {
     "name": "smart-grid-controller",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "Intelligent AC grid management for Victron MultiPlus II with load-based switching, battery protection, and scheduled charging",
     "main": "index.js",
     "keywords": [
@@ -50,6 +50,22 @@
                     ],
                     "default": "li-ncm-15s",
                     "description": "Select your battery pack configuration - this automatically sets safe voltage ranges and SoC calculation"
+                },
+                "controlMethod": {
+                    "type": "string",
+                    "title": "Control Method",
+                    "enum": [
+                        "auto",
+                        "multiplus-gx",
+                        "cerbo-gx"
+                    ],
+                    "enumNames": [
+                        "Auto-detect (recommended)",
+                        "MultiPlus II GX (built-in GX)",
+                        "Cerbo GX (external relay)"
+                    ],
+                    "default": "auto",
+                    "description": "How to control grid connection - auto-detect tries both methods"
                 },
                 "loadThresholds": {
                     "type": "object",
