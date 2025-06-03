@@ -36,7 +36,6 @@ git clone https://github.com/your-username/Signal-K-Plugins.git
 - Signal K server (v1.0+)
 - Victron Energy equipment with Cerbo GX
 - VenusOS "Large" firmware
-- Appropriate external contactors/relays for switching
 
 ## Development
 

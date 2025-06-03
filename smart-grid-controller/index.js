@@ -83,8 +83,9 @@
  * HARDWARE CONNECTIONS:
  * - Reads from: electrical.chargers.275.voltage (DC voltage)
  * - Reads from: electrical.inverters.275.acout.power (AC load)  
- * - Controls: electrical.switches.relay1.state (grid AC enable/disable)
- * - Maps to: com.victronenergy.system /Relay/1/State (Cerbo GX Relay 1)
+ * - Controls (MultiPlus II GX): electrical.inverters.275.acState.ignoreAcIn1.state
+ * - Controls (Cerbo GX): electrical.switches.relay1.state (grid AC enable/disable)
+ * - Maps to: com.victronenergy.vebus.ttyS3 (MultiPlus II GX) or com.victronenergy.system /Relay/1/State (Cerbo GX)
  */
 
 module.exports = function smartGridController(app) {
@@ -100,7 +101,7 @@ module.exports = function smartGridController(app) {
     }
 
     // Start with grid enabled on startup
-    let relayState = true;
+    let gridState = true;
     
     // Track which conditions are currently active
     let enabledByLoad = false;
@@ -418,21 +419,21 @@ module.exports = function smartGridController(app) {
             // Emergency protection overrides everything (including load condition)
             const emergencyProtectionTriggered = emergencyProtectionActive;
 
-            // Handle relay control
-            if (emergencyProtectionTriggered && relayState) {
+            // Handle grid control logic
+            if (emergencyProtectionTriggered && gridState) {
               // Emergency protection triggered - disable grid immediately, no exceptions
               clearTimeout(disableTimer);
               disableTimer = null;
-              relayState = false;
+              gridState = false;
               
               log('info', `Emergency protection triggered - Critical voltage ${voltage.toFixed(2)}V > ${config.voltageThresholds.emergencyVoltage}V`);
               
               setGridState(false, 'Emergency protection triggered');
-            } else if (anyConditionActive && !relayState && !batteryProtectionTriggered && !emergencyProtectionTriggered) {
+            } else if (anyConditionActive && !gridState && !batteryProtectionTriggered && !emergencyProtectionTriggered) {
               // Conditions want to enable grid and no protection active - turn on immediately
               clearTimeout(disableTimer);
               disableTimer = null;
-              relayState = true;
+              gridState = true;
               
               // Log which conditions are active
               const activeConditions = [];
@@ -444,11 +445,11 @@ module.exports = function smartGridController(app) {
               log('info', `Active conditions: ${activeConditions.join(', ')}`);
               
               setGridState(true, `Active conditions: ${activeConditions.join(', ')}`);
-            } else if (batteryProtectionTriggered && relayState) {
+            } else if (batteryProtectionTriggered && gridState) {
               // Battery protection triggered - disable grid immediately
               clearTimeout(disableTimer);
               disableTimer = null;
-              relayState = false;
+              gridState = false;
               
               const protectionReasons = [];
               if (voltage > config.voltageThresholds.highVoltageProtection) protectionReasons.push(`High voltage: ${voltage.toFixed(2)}V > ${config.voltageThresholds.highVoltageProtection}V`);
@@ -457,11 +458,11 @@ module.exports = function smartGridController(app) {
               log('info', `Battery protection: ${protectionReasons.join(', ')} (Load condition: ${enabledByLoad ? 'Active' : 'Inactive'})`);
               
               setGridState(false, `Battery protection: ${protectionReasons.join(', ')} (Load condition: ${enabledByLoad ? 'Active' : 'Inactive'})`);
-            } else if (!anyConditionActive && relayState && !startupGraceTimer) {
+            } else if (!anyConditionActive && gridState && !startupGraceTimer) {
               // No conditions want grid enabled and startup grace period is over - start 30 second disable timer
               if (!disableTimer) {
                 disableTimer = setTimeout(() => {
-                  relayState = false;
+                  gridState = false;
                   disableTimer = null;
                   
                   // Log which conditions were cleared
@@ -476,7 +477,7 @@ module.exports = function smartGridController(app) {
                   setGridState(false, `Cleared conditions: ${clearedConditions.join(', ')}`);
                 }, 30000);
               }
-            } else if (anyConditionActive && relayState && !batteryProtectionTriggered && !emergencyProtectionTriggered) {
+            } else if (anyConditionActive && gridState && !batteryProtectionTriggered && !emergencyProtectionTriggered) {
               // Conditions still want grid enabled and no protection active - clear any pending disable timer
               clearTimeout(disableTimer);
               disableTimer = null;
