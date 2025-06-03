@@ -1,0 +1,132 @@
+{
+    "name": "smart-grid-controller",
+    "version": "1.0.0",
+    "description": "Intelligent AC grid management for Victron MultiPlus II with load-based switching, battery protection, and scheduled charging",
+    "main": "index.js",
+    "keywords": [
+      "signalk-node-server-plugin",
+      "signalk-category-electrical",
+      "victron",
+      "multiplus",
+      "grid-management",
+      "battery-protection",
+      "load-switching",
+      "venus-os",
+      "cerbo-gx",
+      "lifepo4",
+      "li-ncm"
+    ],
+    "signalk-plugin-enabled-by-default": false,
+    "author": "MoonBoi9001",
+    "license": "MIT",
+    "repository": {
+      "type": "git",
+      "url": "https://github.com/MoonBoi9001/signal-k-plugins.git"
+    },
+    "bugs": {
+      "url": "https://github.com/MoonBoi9001/signal-k-plugins/issues"
+    },
+    "homepage": "https://github.com/MoonBoi9001/signal-k-plugins#readme",
+    "engines": {
+      "node": ">=12.0.0"
+    },
+    "dependencies": {},
+    "signalk": {
+      "schema": {
+        "type": "object",
+        "title": "Smart Grid Controller Configuration",
+        "description": "Configure battery protection thresholds and operating parameters for your specific system",
+        "properties": {
+          "batteryType": {
+            "type": "string",
+            "title": "Battery Chemistry",
+            "enum": ["li-ncm-15s", "lifepo4-16s"],
+            "enumNames": ["Li-NCM 15S (55.5V)", "LiFePO4 16S (51.2V)"],
+            "default": "li-ncm-15s",
+            "description": "Select your battery pack configuration - this automatically sets safe voltage ranges and SoC calculation"
+          },
+          "loadThresholds": {
+            "type": "object",
+            "title": "Load-Based Switching",
+            "properties": {
+              "enableWatts": {
+                "type": "number",
+                "title": "Enable Threshold (W)",
+                "default": 2500,
+                "minimum": 10,
+                "maximum": 15000,
+                "description": "Grid enables when AC load exceeds this for 3 seconds"
+              },
+              "disableWatts": {
+                "type": "number", 
+                "title": "Disable Threshold (W)",
+                "default": 1750,
+                "minimum": 10,
+                "maximum": 15000,
+                "description": "Grid disables when AC load drops below this"
+              }
+            }
+          },
+          "socThresholds": {
+            "type": "object",
+            "title": "State of Charge Limits",
+            "properties": {
+              "lowSocEnable": {
+                "type": "number",
+                "title": "Low SoC Enable (%)",
+                "default": 10,
+                "minimum": 5,
+                "maximum": 75,
+                "description": "Grid enables when SoC drops below this"
+              },
+              "lowSocDisable": {
+                "type": "number",
+                "title": "Low SoC Disable (%)",
+                "default": 30,
+                "minimum": 10,
+                "maximum": 80,
+                "description": "Grid disables when SoC rises above this"
+              },
+              "highSocProtection": {
+                "type": "number",
+                "title": "High SoC Protection (%)",
+                "default": 95,
+                "minimum": 70,
+                "maximum": 100,
+                "description": "Standard protection triggers above this SoC"
+              }
+            }
+          },
+          "scheduleSettings": {
+            "type": "object",
+            "title": "Scheduled Charging",
+            "properties": {
+              "timezone": {
+                "type": "string",
+                "title": "Timezone",
+                "default": "Europe/London",
+                "description": "Timezone for scheduled charging window"
+              },
+              "startHour": {
+                "type": "integer",
+                "title": "Start Hour (24h)",
+                "default": 0,
+                "minimum": 0,
+                "maximum": 23,
+                "description": "Hour to start charging window"
+              },
+              "endHour": {
+                "type": "integer", 
+                "title": "End Hour (24h)",
+                "default": 6,
+                "minimum": 1,
+                "maximum": 24,
+                "description": "Hour to end charging window"
+              }
+            }
+          }
+        },
+        "required": ["batteryType"]
+      }
+    }
+  }
