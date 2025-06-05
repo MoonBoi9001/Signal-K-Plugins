@@ -1,12 +1,14 @@
 {
     "name": "smart-grid-controller",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "description": "Intelligent AC grid management for Victron MultiPlus II with load-based switching, battery protection, and scheduled charging",
     "main": "index.js",
     "keywords": [
+        "signalK-plugin",
         "signalk-node-server-plugin",
         "signalk-category-electrical",
         "victron",
+        "energy",
         "multiplus",
         "grid-management",
         "battery-protection",
