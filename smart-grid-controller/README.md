@@ -1,6 +1,12 @@
 # Smart Grid Controller for Signal K
 
+[![npm version](https://badge.fury.io/js/smart-grid-controller.svg)](https://www.npmjs.com/package/smart-grid-controller)
+[![npm downloads](https://img.shields.io/npm/dw/smart-grid-controller)](https://www.npmjs.com/package/smart-grid-controller)
+[![license](https://img.shields.io/npm/l/smart-grid-controller)](https://github.com/MoonBoi9001/signal-k-plugins/blob/main/LICENSE)
+
 Intelligent AC grid management plugin for Victron MultiPlus II systems. Automatically controls when grid power is connected based on battery state, power demand, scheduled charging windows, and comprehensive safety protections.
+
+**📦 Install:** `npm install smart-grid-controller` or via [Signal K App Store](https://www.npmjs.com/package/smart-grid-controller)
 
 ## ⚠️ CRITICAL CONFIGURATION WARNING
 
@@ -32,11 +38,14 @@ Default settings are for Li-NCM 15S (55.5V nominal) batteries. Using wrong volta
 
 ## Installation & Configuration
 
-1. Install via Signal K App Store or manually place files in plugins directory
+1. **Install Plugin:**
+   - **Via Signal K App Store**: Admin UI → AppStore → Electrical → Smart Grid Controller → Install
+   - **Via npm**: `npm install smart-grid-controller` 
+   - **Package Info**: [View on npm](https://www.npmjs.com/package/smart-grid-controller)
 2. **BEFORE ENABLING**: Configure your battery type in Signal K admin panel
 3. **CRITICAL**: Verify all voltage thresholds match your battery specifications
 4. Test in safe conditions with monitoring
-5. Wire Cerbo GX Relay 1 to a contactor controlling MultiPlus II AC input
+5. Wire hardware according to your setup (see Hardware Configuration below)
 
 ### Supported Battery Types
 - **Li-NCM 15S** (55.5V nominal) - High energy density systems
