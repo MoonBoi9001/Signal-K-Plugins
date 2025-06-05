@@ -1,6 +1,6 @@
 {
     "name": "smart-grid-controller",
-    "version": "1.1.1",
+    "version": "1.1.2",
     "description": "Intelligent AC grid management for Victron MultiPlus II with load-based switching, battery protection, and scheduled charging",
     "main": "index.js",
     "keywords": [
