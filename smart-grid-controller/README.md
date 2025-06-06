@@ -10,14 +10,18 @@ Intelligent AC grid management plugin for Victron MultiPlus II systems. Automati
 
 ## ⚠️ CRITICAL CONFIGURATION WARNING
 
-**This plugin MUST be configured for your specific battery type before use!** 
+**This plugin MUST be configured for your specific battery type and capacity before use!** 
 
 Default settings are for Li-NCM 15S (55.5V nominal) batteries. Using wrong voltage thresholds for your battery chemistry could result in:
 - Battery damage from over/under voltage
 - Fire or explosion risk
 - System failure during critical moments
 
-**Always configure your battery type in the Signal K admin panel before enabling the plugin.**
+**REQUIRED CONFIGURATION:**
+1. **Battery Type**: Select your exact chemistry and cell count
+2. **Battery Ah Rating**: Enter your battery's amp-hour capacity (NO DEFAULT - MUST be configured)
+
+**The plugin will NOT start without proper battery configuration.**
 
 ## Features
 
@@ -42,21 +46,42 @@ Default settings are for Li-NCM 15S (55.5V nominal) batteries. Using wrong volta
    - **Via Signal K App Store**: Admin UI → AppStore → Electrical → Smart Grid Controller → Install
    - **Via npm**: `npm install smart-grid-controller` 
    - **Package Info**: [View on npm](https://www.npmjs.com/package/smart-grid-controller)
-2. **BEFORE ENABLING**: Configure your battery type in Signal K admin panel
+2. **MANDATORY CONFIGURATION**: Configure your battery type AND Ah rating in Signal K admin panel
 3. **CRITICAL**: Verify all voltage thresholds match your battery specifications
 4. Test in safe conditions with monitoring
 5. Wire hardware according to your setup (see Hardware Configuration below)
 
 ### Supported Battery Types
-- **Li-NCM 15S** (55.5V nominal) - High energy density systems
-- **LiFePO4 16S** (51.2V nominal) - High voltage LiFePO4 systems
+- **Li-NCM 4S-15S** (14.8V-55.5V) - High energy density systems with universal cell count support
+- **LiFePO4 4S-16S** (12.8V-51.2V) - High voltage LiFePO4 systems with universal cell count support
+
+All configurations use per-cell voltage thresholds automatically scaled to your pack voltage. Simply select your exact battery configuration and the plugin handles the rest safely.
 
 ### Configuration Parameters
 Access through Signal K admin panel → Plugin Config → Smart Grid Controller:
 - **Battery Chemistry**: Select your battery type for automatic safe defaults
+- **Battery Capacity**: Enter your battery's Ah rating for accurate charge/discharge detection
 - **Load Thresholds**: Customize high-load switching points
 - **SoC Limits**: Adjust state-of-charge behavior
 - **Schedule Settings**: Modify charging window and timezone
+
+### Battery Capacity Configuration
+The plugin calculates your total battery capacity from your Ah rating:
+
+**How It Works:**
+- Enter your battery's Ah rating (e.g., 100Ah)
+- Plugin automatically calculates total capacity using chemistry and cell count:
+  - **Li-NCM**: Uses 3.7V nominal × cells × Ah
+  - **LiFePO4**: Uses 3.2V nominal × cells × Ah
+- **Example**: 15S NCM × 280Ah = 55.5V × 280Ah = **15.54kWh**
+
+**Charge/Discharge Detection**
+- **Charging**: Power in > 1% of calculated battery capacity  
+- **Discharging**: Power out > 1% of calculated battery capacity
+- **Resting**: Power flow within ±1% of capacity
+- **Example**: 15.5kWh battery → ±155W thresholds for charge/discharge detection
+
+This ensures accurate SoC calculations tailored to your exact battery configuration!
 
 ## Requirements
 
@@ -124,6 +149,28 @@ Grid AC ──► [Contactor] ──► MultiPlus II AC Input
 - **Invalid data warnings**: Verify Victron system is connected and providing data
 - **Timezone errors**: Ensure timezone string is valid (e.g., "Europe/London", "America/New_York")
 - **Rapid switching**: Adjust hysteresis gaps in configuration
+- **Battery protection not triggering at exact threshold**: Update to plugin version 1.2.0+ which fixes boundary condition bug where protection wouldn't trigger when voltage exactly equals the threshold
+
+### Recent Bug Fixes (v2.0.0+)
+- **BREAKING CHANGE**: Battery Ah rating now REQUIRED - no defaults for safety
+- **MAJOR UPGRADE**: Universal cell count support - NCM 4S-15S and LiFePO4 4S-16S
+- **Per-Cell Logic**: All voltage thresholds now calculated from per-cell voltages scaled to pack
+- **Safety Improvement**: Control disabled if invalid battery configuration detected
+- **Dynamic Battery Capacity**: Configurable battery size (Ah rating) for accurate charge/discharge detection
+- **Smart Power Thresholds**: Charge/discharge detection uses 1% of actual battery capacity
+- **Contextual SoC**: Voltage-to-SoC calculation now adjusts based on charge/discharge state for better accuracy
+- **Power Flow Detection**: Uses charger power data to detect charging, discharging, or resting states
+- **Critical Fix**: Battery protection now triggers when voltage exactly equals threshold (was using `>` instead of `>=`)
+- **SAFETY FIX**: Time-based charging windows no longer override battery protection (dangerous behavior)
+- **Load Override Logic**: Only high-load conditions can override battery protection, not scheduled charging
+- **Improved Logging**: Added detailed debug logging to show current system state and protection status
+- **Enhanced Monitoring**: Better visibility into which conditions are active and why grid stays on/off
+
+### Upgrading from v1.x
+**IMPORTANT**: Version 2.0.0 requires reconfiguration! Existing installations will stop working until you:
+1. Configure your battery Ah rating in the plugin settings
+2. Verify your battery type and cell count are correct
+3. Restart the plugin
 
 ### Getting Help
 - Check Signal K server logs for detailed error messages

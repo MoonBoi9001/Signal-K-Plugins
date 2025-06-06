@@ -1,6 +1,6 @@
 {
     "name": "smart-grid-controller",
-    "version": "1.1.2",
+    "version": "2.0.0",
     "description": "Intelligent AC grid management for Victron MultiPlus II with load-based switching, battery protection, and scheduled charging",
     "main": "index.js",
     "keywords": [
@@ -41,17 +41,17 @@
             "properties": {
                 "batteryType": {
                     "type": "string",
-                    "title": "Battery Chemistry",
+                    "title": "Battery Configuration",
                     "enum": [
-                        "li-ncm-15s",
-                        "lifepo4-16s"
+                        "li-ncm-4s", "li-ncm-5s", "li-ncm-6s", "li-ncm-7s", "li-ncm-8s", "li-ncm-9s", "li-ncm-10s", "li-ncm-11s", "li-ncm-12s", "li-ncm-13s", "li-ncm-14s", "li-ncm-15s",
+                        "lifepo4-4s", "lifepo4-5s", "lifepo4-6s", "lifepo4-7s", "lifepo4-8s", "lifepo4-9s", "lifepo4-10s", "lifepo4-11s", "lifepo4-12s", "lifepo4-13s", "lifepo4-14s", "lifepo4-15s", "lifepo4-16s"
                     ],
                     "enumNames": [
-                        "Li-NCM 15S (55.5V)",
-                        "LiFePO4 16S (51.2V)"
+                        "Li-NCM 4S (14.8V)", "Li-NCM 5S (18.5V)", "Li-NCM 6S (22.2V)", "Li-NCM 7S (25.9V)", "Li-NCM 8S (29.6V)", "Li-NCM 9S (33.3V)", "Li-NCM 10S (37.0V)", "Li-NCM 11S (40.7V)", "Li-NCM 12S (44.4V)", "Li-NCM 13S (48.1V)", "Li-NCM 14S (51.8V)", "Li-NCM 15S (55.5V)",
+                        "LiFePO4 4S (12.8V)", "LiFePO4 5S (16.0V)", "LiFePO4 6S (19.2V)", "LiFePO4 7S (22.4V)", "LiFePO4 8S (25.6V)", "LiFePO4 9S (28.8V)", "LiFePO4 10S (32.0V)", "LiFePO4 11S (35.2V)", "LiFePO4 12S (38.4V)", "LiFePO4 13S (41.6V)", "LiFePO4 14S (44.8V)", "LiFePO4 15S (48.0V)", "LiFePO4 16S (51.2V)"
                     ],
                     "default": "li-ncm-15s",
-                    "description": "Select your battery pack configuration - this automatically sets safe voltage ranges and SoC calculation"
+                    "description": "Select your exact battery pack configuration - this automatically sets safe voltage ranges and SoC calculation for your specific cell count and chemistry"
                 },
                 "controlMethod": {
                     "type": "string",
@@ -148,10 +148,24 @@
                             "description": "Hour to end charging window"
                         }
                     }
+                },
+                "batteryCapacity": {
+                    "type": "object",
+                    "title": "Battery Capacity",
+                    "properties": {
+                        "batteryAh": {
+                            "type": "number",
+                            "title": "Battery Ah Rating",
+                            "minimum": 1,
+                            "maximum": 10000,
+                            "description": "Battery amp-hour rating (REQUIRED - will calculate kWh using cell chemistry and count)"
+                        }
+                    }
                 }
             },
             "required": [
-                "batteryType"
+                "batteryType",
+                "batteryCapacity"
             ]
         }
     }

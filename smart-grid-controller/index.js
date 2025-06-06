@@ -23,7 +23,7 @@
  *    - Enables when: DC voltage < 50.83V for 3+ seconds
  *    - Disables when: DC voltage rises above 53.1V
  *    - Purpose: Prevents battery from going too low (around 10% SoC)
- *    - Hysteresis gap: 2.27V prevents rapid switching
+ *    - Hysteresis gap: 2.27V prevents rapid switching (around 30% SoC)
  * 
  * 3. LOW STATE OF CHARGE CONDITION
  *    - Enables when: Battery SoC < 10% for 3+ seconds  
@@ -39,16 +39,17 @@
  * 
  * BATTERY PROTECTION LAYERS:
  * 
- * STANDARD PROTECTION (Can be overridden by high loads):
- *    - Triggers when: Voltage > 61.5V OR SoC > 95%
- *    - Clears when: Voltage < 60.0V AND SoC < 90%  
- *    - Override: High load condition (>2500W) can keep grid on
+ * STANDARD PROTECTION (Can be overridden by high loads only):
+ *    - Triggers when: Voltage >= 61.5V OR SoC >= 95%
+ *    - Clears when: Voltage < 60.75V AND SoC < 92.5% (0.75V/2.5% hysteresis)
+ *    - Override: ONLY high load condition (>2500W) can keep grid on
+ *    - Blocked: Time-based charging CANNOT override (safety improvement)
  *    - Purpose: Prevents routine overcharging while allowing critical loads
  * 
  * EMERGENCY PROTECTION (Cannot be overridden):
- *    - Triggers when: Voltage > 63.0V
- *    - Clears when: Voltage < 62.0V
- *    - Override: NONE - immediately disconnects grid regardless of load
+ *    - Triggers when: Voltage >= 63.0V
+ *    - Clears when: Voltage < 62.25V (0.75V hysteresis)
+ *    - Override: NONE - immediately disconnects grid regardless of load or time
  *    - Purpose: Final safety protection against battery damage
  * 
  * TIMING BEHAVIOR:
@@ -75,10 +76,12 @@
  * This prevents rapid on/off cycling when readings hover near a single threshold.
  * 
  * BATTERY CONFIGURATION:
- * Currently configured for Li-NCM 15S and LiFePO4 16S battery packs.
- * - Li-NCM 15S: Voltage-to-SoC mapping based on real discharge curve data
- * - LiFePO4 16S: Based on real LiFePO4 cell characteristics (3.1V-3.4V per cell operating range)
- *   Uses the incredibly flat LiFePO4 discharge curve for accurate SoC estimation
+ * Universal cell-count support for multiple battery configurations:
+ * - Li-NCM: 4S to 15S configurations supported (14.8V to 55.5V nominal)
+ * - LiFePO4: 4S to 16S configurations supported (12.8V to 51.2V nominal)
+ * - Per-cell voltage thresholds automatically scaled to pack voltage
+ * - Chemistry-specific SoC curves calculated from per-cell voltage
+ * - Safe defaults: Control disabled if invalid configuration detected
  * 
  * HARDWARE CONNECTIONS:
  * - Reads from: electrical.chargers.275.voltage (DC voltage)
@@ -125,43 +128,101 @@ module.exports = function smartGridController(app) {
     
     // Startup grace period
     let startupGraceTimer = null;
-  
+
+    // Debug logging timer
+    let debugTimer = null;
+    let lastGridState = true;
+    let debugCounter = 0;
+
+    // Function to log system state for debugging
+    function logSystemState(voltage, soc, load, config, chargePower, reason = '') {
+      const activeConditions = [];
+      if (enabledByLoad) activeConditions.push('Load');
+      if (enabledByVoltage) activeConditions.push('Voltage');
+      if (enabledBySoC) activeConditions.push('SoC');
+      if (enabledByTime) activeConditions.push('Time');
+      
+      const protections = [];
+      if (batteryProtectionActive) protections.push('Battery');
+      if (emergencyProtectionActive) protections.push('Emergency');
+      
+      // Determine charge state for logging using dynamic threshold
+      const threshold = config.onePercentThresholdW;
+      const chargeState = chargePower > threshold ? 'Charging' : 
+                         chargePower < -threshold ? 'Discharging' : 
+                         'Resting';
+      
+      log('debug', `System State${reason ? ` (${reason})` : ''}: Grid=${gridState ? 'ON' : 'OFF'} | Conditions=[${activeConditions.join(',')}] | Protections=[${protections.join(',')}] | V=${voltage.toFixed(2)}V | SoC=${soc.toFixed(1)}% | Load=${load.toFixed(0)}W | Charge=${chargePower.toFixed(0)}W(${chargeState}) | Battery=${config.batteryCapacityKwh.toFixed(1)}kWh`);
+    }
+
     // Get plugin configuration with defaults
     function getConfig() {
       const config = app.readPluginOptions();
       
-      // Set battery-specific defaults based on type
-      let defaults = {};
-      switch (config.batteryType || 'li-ncm-15s') {
-        case 'li-ncm-15s':
-          defaults = {
-            voltageThresholds: {
-              lowVoltageEnable: 50.83,
-              lowVoltageDisable: 53.1,
-              highVoltageProtection: 61.5,
-              emergencyVoltage: 63.0
-            }
+      // Parse battery type to get chemistry and cell count
+      const batteryType = config.batteryType || 'li-ncm-15s';
+      const [chemistry, cellCountStr] = batteryType.split('-');
+      const cellCount = parseInt(cellCountStr.replace('s', ''));
+      
+      // Per-cell voltage thresholds for each chemistry
+      let perCellVoltages = {};
+      switch (chemistry) {
+        case 'li-ncm':
+          perCellVoltages = {
+            lowVoltageEnable: 3.39,    // ~10% SoC per cell
+            lowVoltageDisable: 3.54,   // ~30% SoC per cell
+            highVoltageProtection: 4.1, // ~95% SoC per cell
+            emergencyVoltage: 4.2      // ~100% SoC per cell
           };
           break;
-        case 'lifepo4-16s':
-          defaults = {
-            voltageThresholds: {
-              lowVoltageEnable: 49.6,   // 3.1V per cell = 9% SoC (second flat area ends)
-              lowVoltageDisable: 51.0,  // 3.188V per cell = 30% SoC (flat area ends)  
-              highVoltageProtection: 54.4, // 3.4V per cell = 97.5% SoC (aggressive rise starts)
-              emergencyVoltage: 55.2    // 3.45V per cell = practical full charge limit
-            }
+        case 'lifepo4':
+          perCellVoltages = {
+            lowVoltageEnable: 3.0,     // ~3.6% SoC per cell
+            lowVoltageDisable: 3.25,   // ~14.22% SoC per cell
+            highVoltageProtection: 3.45, // ~97.5% SoC per cell
+            emergencyVoltage: 3.65     // ~100% SoC per cell
           };
           break;
+        default:
+          log('error', `Unknown battery chemistry: ${chemistry}`);
+          return null;
       }
+      
+      // Calculate pack voltages by multiplying per-cell voltages by cell count
+      const packVoltages = {
+        lowVoltageEnable: perCellVoltages.lowVoltageEnable * cellCount,
+        lowVoltageDisable: perCellVoltages.lowVoltageDisable * cellCount,
+        highVoltageProtection: perCellVoltages.highVoltageProtection * cellCount,
+        emergencyVoltage: perCellVoltages.emergencyVoltage * cellCount
+      };
+
+      // Calculate battery capacity and 1% power threshold
+      const batteryAh = config.batteryCapacity?.batteryAh;
+      
+      // Safety check - battery Ah MUST be configured
+      if (!batteryAh || batteryAh <= 0) {
+        log('error', 'Battery Ah rating not configured - MUST be set in plugin configuration before use');
+        return null;
+      }
+      
+      const nominalCellVoltage = chemistry === 'lifepo4' ? 3.2 : 3.7; // LiFePO4: 3.2V, Li-NCM: 3.7V
+      const nominalPackVoltage = nominalCellVoltage * cellCount;
+      const batteryCapacityKwh = (nominalPackVoltage * batteryAh) / 1000; // Convert Wh to kWh
+      
+      // Calculate 1% power threshold (for charge/discharge detection)
+      const onePercentThresholdW = (batteryCapacityKwh * 1000) * 0.01; // 1% of capacity in watts
 
       const finalConfig = {
-        batteryType: config.batteryType || 'li-ncm-15s',
+        batteryType: batteryType,
+        chemistry: chemistry,
+        cellCount: cellCount,
+        batteryCapacityKwh: batteryCapacityKwh,
+        onePercentThresholdW: onePercentThresholdW,
         loadThresholds: {
           enableWatts: config.loadThresholds?.enableWatts || 2500,
           disableWatts: config.loadThresholds?.disableWatts || 1750
         },
-        voltageThresholds: defaults.voltageThresholds,
+        voltageThresholds: packVoltages,
         socThresholds: {
           lowSocEnable: config.socThresholds?.lowSocEnable || 10,
           lowSocDisable: config.socThresholds?.lowSocDisable || 30,
@@ -190,56 +251,80 @@ module.exports = function smartGridController(app) {
       
       if (finalConfig.voltageThresholds.lowVoltageEnable >= finalConfig.voltageThresholds.lowVoltageDisable) {
         log('warn', 'Invalid voltage thresholds detected, using battery defaults');
-        finalConfig.voltageThresholds = defaults.voltageThresholds;
+        finalConfig.voltageThresholds = packVoltages;
       }
 
       return finalConfig;
     }
 
-    // Calculate SoC from voltage based on battery type
-    function calculateSoC(voltage, batteryType) {
-      switch (batteryType) {
-        case 'li-ncm-15s':
-          // Li-NCM 15S (55.5V nominal) - based on provided discharge curve
-          if (voltage >= 63) return 100;
-          else if (voltage >= 60.0) return 90 + ((voltage - 60.0) / (63.0 - 60.0)) * 10; // 90-100%
-          else if (voltage >= 58.0) return 80 + ((voltage - 58.0) / (60.0 - 58.0)) * 10; // 80-90%
-          else if (voltage >= 56.75) return 70 + ((voltage - 56.75) / (58.0 - 56.75)) * 10; // 70-80%
-          else if (voltage >= 55.5) return 60 + ((voltage - 55.5) / (56.75 - 55.5)) * 10; // 60-70%
-          else if (voltage >= 54.4) return 50 + ((voltage - 54.4) / (55.5 - 54.4)) * 10; // 50-60%
-          else if (voltage >= 53.75) return 40 + ((voltage - 53.75) / (54.4 - 53.75)) * 10; // 40-50%
-          else if (voltage >= 53.1) return 30 + ((voltage - 53.1) / (53.75 - 53.1)) * 10; // 30-40%
-          else if (voltage >= 52.2) return 20 + ((voltage - 52.2) / (53.1 - 52.2)) * 10; // 20-30%
-          else if (voltage >= 50.83) return 10 + ((voltage - 50.83) / (52.2 - 50.83)) * 10; // 10-20%
-          else if (voltage >= 42.5) return 0 + ((voltage - 42.5) / (50.83 - 42.5)) * 10; // 0-10%
+    // Calculate SoC from voltage based on battery type, cell count, and charging state
+    function calculateSoC(packVoltage, chemistry, cellCount, chargePower, powerThreshold) {
+      // Calculate per-cell voltage
+      const cellVoltage = packVoltage / cellCount;
+      
+      // Detect battery state based on power flow (using dynamic threshold based on battery capacity)
+      const isCharging = chargePower > powerThreshold; // Charging if charger power > 1% of battery capacity
+      const isDischarging = chargePower < -powerThreshold; // Discharging if power out > 1% of capacity
+      const isResting = chargePower >= -powerThreshold && chargePower <= powerThreshold; // Resting if power flow within ±1%
+      
+      // Apply voltage offset based on state (charge/discharge hysteresis)
+      let adjustedCellVoltage = cellVoltage;
+      if (chemistry === 'lifepo4') {
+        if (isCharging) {
+          adjustedCellVoltage = cellVoltage - 0.1; // Charging curve is ~0.1V higher than rest
+        } else if (isDischarging) {
+          adjustedCellVoltage = cellVoltage + 0.05; // Discharge curve is ~0.05V lower than rest
+        }
+        // For resting, use voltage as-is
+      } else if (chemistry === 'li-ncm') {
+        if (isCharging) {
+          adjustedCellVoltage = cellVoltage - 0.05; // NCM has smaller hysteresis
+        } else if (isDischarging) {
+          adjustedCellVoltage = cellVoltage + 0.03;
+        }
+      }
+      
+      switch (chemistry) {
+        case 'li-ncm':
+          // Li-NCM per-cell SoC calculation (3.0V-4.2V range) - adjusted for charge/discharge state
+          if (adjustedCellVoltage >= 4.2) return 100;
+          else if (adjustedCellVoltage >= 4.0) return 90 + ((adjustedCellVoltage - 4.0) / (4.2 - 4.0)) * 10; // 90-100%
+          else if (adjustedCellVoltage >= 3.87) return 80 + ((adjustedCellVoltage - 3.87) / (4.0 - 3.87)) * 10; // 80-90%
+          else if (adjustedCellVoltage >= 3.78) return 70 + ((adjustedCellVoltage - 3.78) / (3.87 - 3.78)) * 10; // 70-80%
+          else if (adjustedCellVoltage >= 3.7) return 60 + ((adjustedCellVoltage - 3.7) / (3.78 - 3.7)) * 10; // 60-70%
+          else if (adjustedCellVoltage >= 3.63) return 50 + ((adjustedCellVoltage - 3.63) / (3.7 - 3.63)) * 10; // 50-60%
+          else if (adjustedCellVoltage >= 3.58) return 40 + ((adjustedCellVoltage - 3.58) / (3.63 - 3.58)) * 10; // 40-50%
+          else if (adjustedCellVoltage >= 3.54) return 30 + ((adjustedCellVoltage - 3.54) / (3.58 - 3.54)) * 10; // 30-40%
+          else if (adjustedCellVoltage >= 3.48) return 20 + ((adjustedCellVoltage - 3.48) / (3.54 - 3.48)) * 10; // 20-30%
+          else if (adjustedCellVoltage >= 3.39) return 10 + ((adjustedCellVoltage - 3.39) / (3.48 - 3.39)) * 10; // 10-20%
+          else if (adjustedCellVoltage >= 3.0) return 0 + ((adjustedCellVoltage - 3.0) / (3.39 - 3.0)) * 10; // 0-10%
           else return 0;
 
-        case 'lifepo4-16s':
-          // LiFePO4 16S (51.2V nominal) - based on real discharge/charge curve data
-          // Per cell voltages × 16 for 16S pack
-          if (voltage >= 58.4) return 100;        // 3.65V per cell - full charge
-          else if (voltage >= 54.4) return 97.5 + ((voltage - 54.4) / (58.4 - 54.4)) * 2.5;   // 97.5-100% (aggressive rise)
-          else if (voltage >= 54.096) return 92.7 + ((voltage - 54.096) / (54.4 - 54.096)) * 4.8; // 92.7-97.5% (second flat ends)
-          else if (voltage >= 53.2) return 27.3 + ((voltage - 53.2) / (54.096 - 53.2)) * 65.4;   // 27.3-92.7% (long flat area)
-          else if (voltage >= 51.2) return 5.5 + ((voltage - 51.2) / (53.2 - 51.2)) * 21.8;     // 5.5-27.3% (first flat part)
-          else if (voltage >= 51.008) return 9.0 + ((voltage - 51.008) / (51.2 - 51.008)) * -3.5; // 9-5.5% (transition zone)
-          else if (voltage >= 49.6) return 3.6 + ((voltage - 49.6) / (51.008 - 49.6)) * 5.4;    // 3.6-9% (second flat area)
-          else if (voltage >= 48.0) return 0 + ((voltage - 48.0) / (49.6 - 48.0)) * 3.6;        // 0-3.6% (aggressive drop)
+        case 'lifepo4':
+          // LiFePO4 per-cell SoC calculation (3.0V-3.65V range) - adjusted for charge/discharge state
+          if (adjustedCellVoltage >= 3.65) return 100;        // 3.65V per cell - full charge
+          else if (adjustedCellVoltage >= 3.4) return 97.5 + ((adjustedCellVoltage - 3.4) / (3.65 - 3.4)) * 2.5;   // 97.5-100%
+          else if (adjustedCellVoltage >= 3.381) return 92.7 + ((adjustedCellVoltage - 3.381) / (3.4 - 3.381)) * 4.8; // 92.7-97.5%
+          else if (adjustedCellVoltage >= 3.325) return 27.3 + ((adjustedCellVoltage - 3.325) / (3.381 - 3.325)) * 65.4;   // 27.3-92.7%
+          else if (adjustedCellVoltage >= 3.2) return 5.5 + ((adjustedCellVoltage - 3.2) / (3.325 - 3.2)) * 21.8;     // 5.5-27.3%
+          else if (adjustedCellVoltage >= 3.188) return 9.0 + ((adjustedCellVoltage - 3.188) / (3.2 - 3.188)) * -3.5; // 9-5.5%
+          else if (adjustedCellVoltage >= 3.1) return 3.6 + ((adjustedCellVoltage - 3.1) / (3.188 - 3.1)) * 5.4;    // 3.6-9%
+          else if (adjustedCellVoltage >= 3.0) return 0 + ((adjustedCellVoltage - 3.0) / (3.1 - 3.0)) * 3.6;        // 0-3.6%
           else return 0;
 
         default:
-          // Fallback to Li-NCM calculation if battery type not recognized
-          if (voltage >= 63) return 100;
-          else if (voltage >= 60.0) return 90 + ((voltage - 60.0) / (63.0 - 60.0)) * 10;
-          else if (voltage >= 58.0) return 80 + ((voltage - 58.0) / (60.0 - 58.0)) * 10;
-          else if (voltage >= 56.75) return 70 + ((voltage - 56.75) / (58.0 - 56.75)) * 10;
-          else if (voltage >= 55.5) return 60 + ((voltage - 55.5) / (56.75 - 55.5)) * 10;
-          else if (voltage >= 54.4) return 50 + ((voltage - 54.4) / (55.5 - 54.4)) * 10;
-          else if (voltage >= 53.75) return 40 + ((voltage - 53.75) / (54.4 - 53.75)) * 10;
-          else if (voltage >= 53.1) return 30 + ((voltage - 53.1) / (53.75 - 53.1)) * 10;
-          else if (voltage >= 52.2) return 20 + ((voltage - 52.2) / (53.1 - 52.2)) * 10;
-          else if (voltage >= 50.83) return 10 + ((voltage - 50.83) / (52.2 - 50.83)) * 10;
-          else if (voltage >= 42.5) return 0 + ((voltage - 42.5) / (50.83 - 42.5)) * 10;
+          // Fallback to Li-NCM calculation if chemistry not recognized
+          if (adjustedCellVoltage >= 4.2) return 100;
+          else if (adjustedCellVoltage >= 4.0) return 90 + ((adjustedCellVoltage - 4.0) / (4.2 - 4.0)) * 10;
+          else if (adjustedCellVoltage >= 3.87) return 80 + ((adjustedCellVoltage - 3.87) / (4.0 - 3.87)) * 10;
+          else if (adjustedCellVoltage >= 3.78) return 70 + ((adjustedCellVoltage - 3.78) / (3.87 - 3.78)) * 10;
+          else if (adjustedCellVoltage >= 3.7) return 60 + ((adjustedCellVoltage - 3.7) / (3.78 - 3.7)) * 10;
+          else if (adjustedCellVoltage >= 3.63) return 50 + ((adjustedCellVoltage - 3.63) / (3.7 - 3.63)) * 10;
+          else if (adjustedCellVoltage >= 3.58) return 40 + ((adjustedCellVoltage - 3.58) / (3.63 - 3.58)) * 10;
+          else if (adjustedCellVoltage >= 3.54) return 30 + ((adjustedCellVoltage - 3.54) / (3.58 - 3.54)) * 10;
+          else if (adjustedCellVoltage >= 3.48) return 20 + ((adjustedCellVoltage - 3.48) / (3.54 - 3.48)) * 10;
+          else if (adjustedCellVoltage >= 3.39) return 10 + ((adjustedCellVoltage - 3.39) / (3.48 - 3.39)) * 10;
+          else if (adjustedCellVoltage >= 3.0) return 0 + ((adjustedCellVoltage - 3.0) / (3.39 - 3.0)) * 10;
           else return 0;
       }
     }
@@ -248,6 +333,12 @@ module.exports = function smartGridController(app) {
     function setGridState(enabled, reason) {
       try {
         const config = getConfig();
+        
+        // Safety check - disable control if configuration is invalid
+        if (!config || !config.chemistry || !config.cellCount) {
+          log('error', 'Invalid battery configuration - DISABLING CONTROL for safety');
+          return;
+        }
         
         // Method 1: Try MultiPlus II GX direct AC input control (preferred for built-in GX)
         if (config.controlMethod === 'multiplus-gx' || config.controlMethod === 'auto') {
@@ -295,6 +386,21 @@ module.exports = function smartGridController(app) {
         log('info', 'Grid AC ENABLED on startup - 30s grace period active');
         setGridState(true, 'Startup - 30s grace period active');
         
+        // Log battery configuration for user verification
+        const config = getConfig();
+        if (!config) {
+          log('error', '***************************************************');
+          log('error', '* CRITICAL: Battery Ah rating not configured!    *');
+          log('error', '* Plugin DISABLED for safety.                    *');
+          log('error', '* Configure Battery Capacity in plugin settings. *');
+          log('error', '***************************************************');
+          return; // Exit plugin startup
+        }
+        
+        if (config) {
+          log('info', `Battery Configuration: ${config.chemistry.toUpperCase()} ${config.cellCount}S | Capacity: ${config.batteryCapacityKwh.toFixed(1)}kWh | Charge/Discharge Threshold: ±${config.onePercentThresholdW.toFixed(0)}W (1%)`);
+        }
+        
         // Start 30-second startup grace period
         startupGraceTimer = setTimeout(() => {
           startupGraceTimer = null;
@@ -306,6 +412,7 @@ module.exports = function smartGridController(app) {
           try {
             const voltage = app.getSelfPath('electrical.chargers.275.voltage')?.value || 0;
             const load = app.getSelfPath('electrical.inverters.275.acout.power')?.value || 0;
+            const chargePower = app.getSelfPath('electrical.chargers.275.power')?.value || 0;
             
             // Validate data - skip processing if values are clearly invalid
             if (voltage < 0 || voltage > 100 || load < 0 || load > 50000) {
@@ -314,27 +421,37 @@ module.exports = function smartGridController(app) {
             }
             
             const config = getConfig();
-
-            // Calculate SoC from voltage based on battery type
-            let soc = calculateSoC(voltage, config.batteryType);
             
-            // Ensure SoC is within valid range
-            soc = Math.max(0, Math.min(100, soc));
+            // Safety check - disable control if configuration is invalid
+            if (!config || !config.chemistry || !config.cellCount) {
+              log('error', 'Invalid battery configuration - DISABLING CONTROL for safety');
+              return;
+            }
 
             // Get time in configured timezone with error handling
             let localTime, hours, isChargingWindow;
+
+            // Figure out if we are in the charging window
             try {
               const now = new Date();
               localTime = new Date(now.toLocaleString("en-US", {timeZone: config.scheduleSettings.timezone}));
               hours = localTime.getHours();
               isChargingWindow = (hours >= config.scheduleSettings.startHour && hours < config.scheduleSettings.endHour);
+
+            // If we can't get the time, use local time
             } catch (timezoneError) {
               log('warn', `Invalid timezone ${config.scheduleSettings.timezone}, falling back to local time`);
               localTime = new Date();
               hours = localTime.getHours();
               isChargingWindow = (hours >= config.scheduleSettings.startHour && hours < config.scheduleSettings.endHour);
             }
-  
+
+            // Calculate SoC from voltage based on battery type, cell count, and charging state
+            let soc = calculateSoC(voltage, config.chemistry, config.cellCount, chargePower, config.onePercentThresholdW);
+            
+            // Ensure SoC is within valid range
+            soc = Math.max(0, Math.min(100, soc));
+
             // Condition 1: Load > threshold for 3 seconds (enable) / < threshold (disable immediately)
             if (load > config.loadThresholds.enableWatts && !enabledByLoad) {
               if (!loadEnableTimer) {
@@ -393,28 +510,34 @@ module.exports = function smartGridController(app) {
             enabledByTime = isChargingWindow;
   
             // Battery protection with hysteresis: configurable thresholds
-            const highVoltageRecovery = config.voltageThresholds.highVoltageProtection - 1.5; // 1.5V hysteresis
-            const highSocRecovery = config.socThresholds.highSocProtection - 5; // 5% hysteresis
+            const highVoltageRecovery = config.voltageThresholds.highVoltageProtection - 0.75; // 0.75V hysteresis
+            const highSocRecovery = config.socThresholds.highSocProtection - 2.5; // 2.5% hysteresis
             
-            if ((voltage > config.voltageThresholds.highVoltageProtection || soc > config.socThresholds.highSocProtection) && !batteryProtectionActive) {
+            // If voltage or SoC is above threshold and battery protection is not active, activate battery protection
+            if ((voltage >= config.voltageThresholds.highVoltageProtection || soc >= config.socThresholds.highSocProtection) && !batteryProtectionActive) {
               batteryProtectionActive = true;
+              log('info', `Battery protection ACTIVATED - Voltage: ${voltage.toFixed(2)}V (>= ${config.voltageThresholds.highVoltageProtection}V), SoC: ${soc.toFixed(1)}% (>= ${config.socThresholds.highSocProtection}%)`);
+            
+            // If voltage and SoC are below threshold and battery protection is active, deactivate battery protection
             } else if (voltage < highVoltageRecovery && soc < highSocRecovery && batteryProtectionActive) {
               batteryProtectionActive = false;
+              log('info', `Battery protection CLEARED - Voltage: ${voltage.toFixed(2)}V (< ${highVoltageRecovery}V), SoC: ${soc.toFixed(1)}% (< ${highSocRecovery}%)`);
             }
             
-            // Emergency battery protection: configurable emergency voltage
-            const emergencyRecovery = config.voltageThresholds.emergencyVoltage - 1.0; // 1V hysteresis
-            if (voltage > config.voltageThresholds.emergencyVoltage && !emergencyProtectionActive) {
+            // If voltage is above threshold and emergency protection is not active, activate emergency protection
+            const emergencyRecovery = config.voltageThresholds.emergencyVoltage - 0.75; // 0.75V hysteresis
+            if (voltage >= config.voltageThresholds.emergencyVoltage && !emergencyProtectionActive) {
               emergencyProtectionActive = true;
+              log('info', `Emergency protection ACTIVATED - Voltage: ${voltage.toFixed(2)}V >= ${config.voltageThresholds.emergencyVoltage}V`);
+            
+            // If voltage is below threshold and emergency protection is active, deactivate emergency protection
             } else if (voltage < emergencyRecovery && emergencyProtectionActive) {
               emergencyProtectionActive = false;
+              log('info', `Emergency protection CLEARED - Voltage: ${voltage.toFixed(2)}V < ${emergencyRecovery}V`);
             }
 
             // Determine if any condition is active
             const anyConditionActive = enabledByLoad || enabledByVoltage || enabledBySoC || enabledByTime;
-            
-            // Battery protection overrides other conditions (unless load condition active)
-            const batteryProtectionTriggered = batteryProtectionActive && !enabledByLoad;
             
             // Emergency protection overrides everything (including load condition)
             const emergencyProtectionTriggered = emergencyProtectionActive;
@@ -426,10 +549,28 @@ module.exports = function smartGridController(app) {
               disableTimer = null;
               gridState = false;
               
-              log('info', `Emergency protection triggered - Critical voltage ${voltage.toFixed(2)}V > ${config.voltageThresholds.emergencyVoltage}V`);
+              log('info', `Emergency protection triggered - Critical voltage ${voltage.toFixed(2)}V >= ${config.voltageThresholds.emergencyVoltage}V`);
               
               setGridState(false, 'Emergency protection triggered');
-            } else if (anyConditionActive && !gridState && !batteryProtectionTriggered && !emergencyProtectionTriggered) {
+            } else if (batteryProtectionActive && gridState) {
+              // Battery protection triggered - disable grid immediately (only load condition can override, not time)
+              const canOverrideProtection = enabledByLoad; // Only high load can override battery protection
+              
+              if (!canOverrideProtection) {
+                clearTimeout(disableTimer);
+                disableTimer = null;
+                gridState = false;
+                
+                const protectionReasons = [];
+                if (voltage >= config.voltageThresholds.highVoltageProtection) protectionReasons.push(`High voltage: ${voltage.toFixed(2)}V >= ${config.voltageThresholds.highVoltageProtection}V`);
+                if (soc >= config.socThresholds.highSocProtection) protectionReasons.push(`High SoC: ${soc.toFixed(1)}% >= ${config.socThresholds.highSocProtection}%`);
+                
+                const overrideStatus = enabledByTime ? ' (Time condition ignored for safety)' : '';
+                log('info', `Battery protection: ${protectionReasons.join(', ')} (Load override: ${enabledByLoad ? 'Active' : 'Inactive'})${overrideStatus}`);
+                
+                setGridState(false, `Battery protection: ${protectionReasons.join(', ')}${overrideStatus}`);
+              }
+            } else if (anyConditionActive && !gridState && !batteryProtectionActive && !emergencyProtectionActive) {
               // Conditions want to enable grid and no protection active - turn on immediately
               clearTimeout(disableTimer);
               disableTimer = null;
@@ -445,19 +586,6 @@ module.exports = function smartGridController(app) {
               log('info', `Active conditions: ${activeConditions.join(', ')}`);
               
               setGridState(true, `Active conditions: ${activeConditions.join(', ')}`);
-            } else if (batteryProtectionTriggered && gridState) {
-              // Battery protection triggered - disable grid immediately
-              clearTimeout(disableTimer);
-              disableTimer = null;
-              gridState = false;
-              
-              const protectionReasons = [];
-              if (voltage > config.voltageThresholds.highVoltageProtection) protectionReasons.push(`High voltage: ${voltage.toFixed(2)}V > ${config.voltageThresholds.highVoltageProtection}V`);
-              if (soc > config.socThresholds.highSocProtection) protectionReasons.push(`High SoC: ${soc.toFixed(1)}% > ${config.socThresholds.highSocProtection}%`);
-              
-              log('info', `Battery protection: ${protectionReasons.join(', ')} (Load condition: ${enabledByLoad ? 'Active' : 'Inactive'})`);
-              
-              setGridState(false, `Battery protection: ${protectionReasons.join(', ')} (Load condition: ${enabledByLoad ? 'Active' : 'Inactive'})`);
             } else if (!anyConditionActive && gridState && !startupGraceTimer) {
               // No conditions want grid enabled and startup grace period is over - start 30 second disable timer
               if (!disableTimer) {
@@ -477,11 +605,14 @@ module.exports = function smartGridController(app) {
                   setGridState(false, `Cleared conditions: ${clearedConditions.join(', ')}`);
                 }, 30000);
               }
-            } else if (anyConditionActive && gridState && !batteryProtectionTriggered && !emergencyProtectionTriggered) {
+            } else if (anyConditionActive && gridState && !batteryProtectionActive && !emergencyProtectionActive) {
               // Conditions still want grid enabled and no protection active - clear any pending disable timer
               clearTimeout(disableTimer);
               disableTimer = null;
             }
+
+            // Log system state for debugging
+            logSystemState(voltage, soc, load, config, chargePower);
           } catch (error) {
             log('error', `Error processing data - ${error.message}`);
           }
@@ -521,6 +652,7 @@ module.exports = function smartGridController(app) {
         clearTimeout(socEnableTimer);
         clearTimeout(disableTimer);
         clearTimeout(startupGraceTimer);
+        clearTimeout(debugTimer);
       }
     };
   };
